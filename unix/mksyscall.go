@@ -1,46 +1,32 @@
-// Copyright 2013 The Go Authors. All rights reserved.
+// Copyright 2018 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
 // +build ignore
 
 /*
-mksyscall_windows generates windows system call bodies
+This program reads a file containing function prototypes
+(like syscall_darwin.go) and generates system call bodies.
+The prototypes are marked by lines beginning with "//sys"
+and read like func declarations if //sys is replaced by func, but:
+	* The parameter lists must give a name for each argument.
+	  This includes return parameters.
+	* The parameter lists must give a type for each argument:
+	  the (x, y, z int) shorthand is not allowed.
+	* If the return parameter is an error number, it must be named errno.
 
-It parses all files specified on command line containing function
-prototypes (like syscall_windows.go) and prints system call bodies
-to standard output.
-
-The prototypes are marked by lines beginning with "//sys" and read
-like func declarations if //sys is replaced by func, but:
-
-* The parameter lists must give a name for each argument. This
-  includes return parameters.
-
-* The parameter lists must give a type for each argument:
-  the (x, y, z int) shorthand is not allowed.
-
-* If the return parameter is an error number, it must be named err.
-
-* If go func name needs to be different from its winapi dll name,
-  the winapi name could be specified at the end, after "=" sign, like
-  //sys LoadLibrary(libname string) (handle uint32, err error) = LoadLibraryA
-
-* Each function that returns err needs to supply a condition, that
-  return value of winapi will be tested against to detect failure.
-  This would set err to windows "last-error", otherwise it will be nil.
-  The value can be provided at end of //sys declaration, like
-  //sys LoadLibrary(libname string) (handle uint32, err error) [failretval==-1] = LoadLibraryA
-  and is [failretval==0] by default.
+A line beginning with //sysnb is like //sys, except that the
+goroutine will not be suspended during the execution of the system
+call.  This must only be used for system calls which can never
+block, as otherwise the system call could cause all goroutines to
+hang.
 
 Usage:
-	mksyscall_windows [flags] [path ...]
+	mksyscall [-b32 | -l32] [-tags x,y] [file ...]
 
 The flags are:
 	-output
 		Specify output file name (outputs to console if blank).
-	-trace
-		Generate print statement after every syscall.
 */
 package main
 
@@ -66,7 +52,16 @@ import (
 )
 
 var (
-	filename       = flag.String("output", "", "output file name (standard output if omitted)")
+	b32       = flag.Bool("b32", false, "32bit big-endian")
+	l32       = flag.Bool("l32", false, "32bit little-endian")
+	plan9     = flag.Bool("plan9", false, "plan9")
+	openbsd   = flag.Bool("openbsd", false, "openbsd")
+	netbsd    = flag.Bool("netbsd", false, "netbsd")
+	dragonfly = flag.Bool("dragonfly", false, "dragonfly")
+	arm       = flag.Bool("arm", false, "arm")
+	tags      = flag.String("tags", "", "build tags")
+	filename  = flag.String("output", "", "output file name (standard output if omitted)")
+
 	printTraceFlag = flag.Bool("trace", false, "generate print statement after every syscall")
 	systemDLL      = flag.Bool("systemdll", true, "whether all DLLs should be loaded from the Windows system directory")
 )
@@ -775,7 +770,7 @@ func (src *Source) Generate(w io.Writer) error {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: mksyscall_windows [flags] [path ...]\n")
+	fmt.Fprintf(os.Stderr, "usage: mksyscall [-b32 | -l32] [-tags x,y] [file ...]\n")
 	flag.PrintDefaults()
 	os.Exit(1)
 }
