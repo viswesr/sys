@@ -63,7 +63,7 @@ var (
 	filename  = flag.String("output", "", "output file name (standard output if omitted)")
 
 	printTraceFlag = flag.Bool("trace", false, "generate print statement after every syscall")
-	systemDLL      = flag.Bool("systemdll", true, "whether all DLLs should be loaded from the Windows system directory")
+	systemDLL      = flag.Bool("systemdll", false, "whether all DLLs should be loaded from the Windows system directory")
 )
 
 func trim(s string) string {
@@ -656,10 +656,14 @@ func (src *Source) ParseFile(path string) error {
 		if len(t) < 7 {
 			continue
 		}
-		if !strings.HasPrefix(t, "//sys") {
+		if !strings.HasPrefix(t, "//sys") && !strings.HasPrefix(t, "//sysnb") {
 			continue
 		}
-		t = t[5:]
+		if strings.HasPrefix(t, "//sys") {
+			t = t[5:] /* //sys   */
+		} else {
+			t = t[7:] /* //sysnb */
+		}
 		if !(t[0] == ' ' || t[0] == '\t') {
 			continue
 		}
