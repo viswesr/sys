@@ -64,7 +64,6 @@ var (
 	filename  = flag.String("output", "", "output file name (standard output if omitted)")
 
 	printTraceFlag = flag.Bool("trace", false, "generate print statement after every syscall")
-	systemDLL      = flag.Bool("systemdll", false, "whether all DLLs should be loaded from the Windows system directory")
 )
 
 func trim(s string) string {
@@ -315,15 +314,13 @@ func (r *Rets) SetErrorCode() string {
 
 // Fn describes syscall function.
 type Fn struct {
-	Name        string   // function name
-	IsSysNB     bool     // false - sys, true - sysnb
-	SysName     string   // SYS_NAME
-	Params      []*Param // function parameters (i.e in)
-	Rets        *Rets    // function return parameters (i.e out)
-	PrintTrace  bool
-	dllname     string
-	dllfuncname string
-	src         string
+	Name       string   // function name
+	IsSysNB    bool     // false - sys, true - sysnb
+	SysName    string   // SYS_NAME
+	Params     []*Param // function parameters (i.e in)
+	Rets       *Rets    // function return parameters (i.e out)
+	PrintTrace bool
+	src        string
 	// TODO: get rid of this field and just use parameter index instead
 	curTmpVarIdx int // insure tmp variables have uniq names
 }
@@ -429,42 +426,7 @@ func newFn(s string) (*Fn, error) {
 	if found {
 		f.Rets.FailCond = body
 	}
-	// dll and dll function names
-	s = trim(s)
-	if s == "" {
-		return f, nil
-	}
-	if !strings.HasPrefix(s, "=") {
-		return nil, errors.New("Could not extract dll name from \"" + f.src + "\"")
-	}
-	s = trim(s[1:])
-	a := strings.Split(s, ".")
-	switch len(a) {
-	case 1:
-		f.dllfuncname = a[0]
-	case 2:
-		f.dllname = a[0]
-		f.dllfuncname = a[1]
-	default:
-		return nil, errors.New("Could not extract dll name from \"" + f.src + "\"")
-	}
 	return f, nil
-}
-
-// DLLName returns DLL name for function f.
-func (f *Fn) DLLName() string {
-	if f.dllname == "" {
-		return "kernel32"
-	}
-	return f.dllname
-}
-
-// DLLName returns DLL function name for function f.
-func (f *Fn) DLLFuncName() string {
-	if f.dllfuncname == "" {
-		return f.Name
-	}
-	return f.dllfuncname
 }
 
 // ParamList returns source code for function f parameters.
@@ -546,26 +508,13 @@ func (f *Fn) HelperCallParamList() string {
 	return strings.Join(a, ", ")
 }
 
-// IsUTF16 is true, if f is W (utf16) function. It is false
-// for all A (ascii) functions.
-func (f *Fn) IsUTF16() bool {
-	s := f.DLLFuncName()
-	return s[len(s)-1] == 'W'
-}
-
 // StrconvFunc returns name of Go string to OS string function for f.
 func (f *Fn) StrconvFunc() string {
-	if f.IsUTF16() {
-		return syscalldot() + "UTF16PtrFromString"
-	}
 	return syscalldot() + "BytePtrFromString"
 }
 
 // StrconvType returns Go type name used for OS string for f.
 func (f *Fn) StrconvType() string {
-	if f.IsUTF16() {
-		return "*uint16"
-	}
 	return "*byte"
 }
 
@@ -624,20 +573,6 @@ func ParseFiles(fs []string) (*Source, error) {
 		}
 	}
 	return src, nil
-}
-
-// DLLs return dll names for a source set src.
-func (src *Source) DLLs() []string {
-	uniq := make(map[string]bool)
-	r := make([]string, 0)
-	for _, f := range src.Funcs {
-		name := f.DLLName()
-		if _, found := uniq[name]; !found {
-			uniq[name] = true
-			r = append(r, name)
-		}
-	}
-	return r
 }
 
 // ParseFile adds additional file path to a source set src.
@@ -731,57 +666,15 @@ func (src *Source) IsStdRepo() (bool, error) {
 
 // Generate output source file from a source set src.
 func (src *Source) Generate(w io.Writer) error {
-	const (
-		pkgStd         = iota // any package in std library
-		pkgXSysWindows        // x/sys/windows package
-		pkgOther
-	)
-	isStdRepo, err := src.IsStdRepo()
-	if err != nil {
-		return err
-	}
-	var pkgtype int
-	switch {
-	case isStdRepo:
-		pkgtype = pkgStd
-	case packageName == "windows":
-		// TODO: this needs better logic than just using package name
-		pkgtype = pkgXSysWindows
-	default:
-		pkgtype = pkgOther
-	}
-	if *systemDLL {
-		switch pkgtype {
-		case pkgStd:
-			src.Import("internal/syscall/windows/sysdll")
-		case pkgXSysWindows:
-		default:
-			src.ExternalImport("golang.org/x/sys/windows")
-		}
-	}
 	if packageName != "syscall" {
 		src.Import("syscall")
 	}
 	funcMap := template.FuncMap{
 		"packagename": packagename,
 		"syscalldot":  syscalldot,
-		"newlazydll": func(dll string) string {
-			arg := "\"" + dll + ".dll\""
-			if !*systemDLL {
-				return syscalldot() + "NewLazyDLL(" + arg + ")"
-			}
-			switch pkgtype {
-			case pkgStd:
-				return syscalldot() + "NewLazyDLL(sysdll.Add(" + arg + "))"
-			case pkgXSysWindows:
-				return "NewLazySystemDLL(" + arg + ")"
-			default:
-				return "windows.NewLazySystemDLL(" + arg + ")"
-			}
-		},
 	}
 	t := template.Must(template.New("main").Funcs(funcMap).Parse(srcTemplate))
-	err = t.Execute(w, src)
+	err := t.Execute(w, src)
 	if err != nil {
 		return errors.New("Failed to execute template: " + err.Error())
 	}
@@ -789,7 +682,7 @@ func (src *Source) Generate(w io.Writer) error {
 }
 
 func usage() {
-	fmt.Fprintf(os.Stderr, "usage: mksyscall [-b32 | -l32] [-tags x,y] [file ...]\n")
+	fmt.Fprintf(os.Stderr, "usage: go run mksyscall.go [-b32 | -l32] [-tags x,y] [file ...]\n")
 	flag.PrintDefaults()
 	os.Exit(1)
 }
