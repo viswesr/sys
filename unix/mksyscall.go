@@ -62,8 +62,6 @@ var (
 	arm       = flag.Bool("arm", false, "arm")
 	tags      = flag.String("tags", "", "build tags")
 	filename  = flag.String("output", "", "output file name (standard output if omitted)")
-
-	printTraceFlag = flag.Bool("trace", false, "generate print statement after every syscall")
 )
 
 func trim(s string) string {
@@ -81,6 +79,18 @@ func syscalldot() string {
 		return ""
 	}
 	return "syscall."
+}
+
+// cmdline returns this script's commandline arguments
+func cmdline() string {
+	// Todo: change mksyscall.pl to go run mksyscall.go later
+	//       Kept for no git diff
+	return "mksyscall.pl " + strings.Join(os.Args[1:], " ")
+}
+
+// buildtags returns build tags
+func buildtags() string {
+	return *tags
 }
 
 // Param is function parameter
@@ -114,12 +124,14 @@ func (p *Param) BoolTmpVarCode() string {
 
 // SliceTmpVarCode returns source code for slice temp variable.
 func (p *Param) SliceTmpVarCode() string {
-	const code = `var %s *%s
+	const code = `var %s unsafe.Pointer
 	if len(%s) > 0 {
-		%s = &%s[0]
+		%s = unsafe.Pointer(&%s[0])
+	} else {
+		%s = unsafe.Pointer(&_zero)
 	}`
 	tmp := p.tmpVar()
-	return fmt.Sprintf(code, tmp, p.Type[2:], p.Name, tmp, p.Name)
+	return fmt.Sprintf(code, tmp, p.Name, tmp, p.Name, tmp)
 }
 
 // StringTmpVarCode returns source code for string temp variable.
@@ -178,7 +190,7 @@ func (p *Param) SyscallArgList() []string {
 		s = p.tmpVar()
 	case strings.HasPrefix(t, "[]"):
 		return []string{
-			fmt.Sprintf("uintptr(unsafe.Pointer(%s))", p.tmpVar()),
+			fmt.Sprintf("uintptr(%s)", p.tmpVar()),
 			fmt.Sprintf("uintptr(len(%s))", p.Name),
 		}
 	default:
@@ -219,7 +231,6 @@ type Rets struct {
 	Name         string
 	Type         string
 	ReturnsError bool
-	FailCond     string
 }
 
 // ErrorVarName returns error variable name for r.
@@ -262,18 +273,8 @@ func (r *Rets) PrintList() string {
 
 // SetReturnValuesCode returns source code that accepts syscall return values.
 func (r *Rets) SetReturnValuesCode() string {
-	if r.Name == "" && !r.ReturnsError {
-		return ""
-	}
-	retvar := "r0"
-	if r.Name == "" {
-		retvar = "r1"
-	}
-	errvar := "_"
-	if r.ReturnsError {
-		errvar = "e1"
-	}
-	return fmt.Sprintf("%s, _, %s := ", retvar, errvar)
+	//Todo: Rewrite
+	return fmt.Sprintf("r0, _, e1 := ")
 }
 
 func (r *Rets) useLongHandleErrorCode(retvar string) string {
@@ -314,13 +315,12 @@ func (r *Rets) SetErrorCode() string {
 
 // Fn describes syscall function.
 type Fn struct {
-	Name       string   // function name
-	IsSysNB    bool     // false - sys, true - sysnb
-	SysName    string   // SYS_NAME
-	Params     []*Param // function parameters (i.e in)
-	Rets       *Rets    // function return parameters (i.e out)
-	PrintTrace bool
-	src        string
+	Name    string   // function name
+	IsSysNB bool     // sys - false, sysnb - true
+	SysName string   // SYS_NAME
+	Params  []*Param // function parameters (i.e in)
+	Rets    *Rets    // function return parameters (i.e out)
+	src     string
 	// TODO: get rid of this field and just use parameter index instead
 	curTmpVarIdx int // insure tmp variables have uniq names
 }
@@ -379,9 +379,8 @@ func extractSection(s string, start, end rune) (prefix, body, suffix string, fou
 func newFn(s string) (*Fn, error) {
 	s = trim(s)
 	f := &Fn{
-		Rets:       &Rets{},
-		src:        s,
-		PrintTrace: *printTraceFlag,
+		Rets: &Rets{},
+		src:  s,
 	}
 	// function name and args
 	prefix, body, s, found := extractSection(s, '(', ')')
@@ -417,14 +416,17 @@ func newFn(s string) (*Fn, error) {
 			f.Rets.ReturnsError = true
 			f.Rets.Name = r[0].Name
 			f.Rets.Type = r[0].Type
+		case 3:
+			if !r[2].IsError() {
+				return nil, errors.New("Only last windows error is allowed as third return value in \"" + f.src + "\"")
+			}
+			f.Rets.ReturnsError = true
+			f.Rets.Name = r[0].Name
+			f.Rets.Type = r[0].Type
+			//Todo: implement proper 3 parameter return type
 		default:
 			return nil, errors.New("Too many return values in \"" + f.src + "\"")
 		}
-	}
-	// fail condition
-	_, body, s, found = extractSection(s, '[', ']')
-	if found {
-		f.Rets.FailCond = body
 	}
 	return f, nil
 }
@@ -477,10 +479,29 @@ func (f *Fn) SyscallParamCount() int {
 // Syscall determines which SyscallX function to use for function f.
 func (f *Fn) Syscall() string {
 	c := f.SyscallParamCount()
-	if c == 3 {
-		return syscalldot() + "Syscall"
+	// Determine which form to use;
+	asm := "Syscall"
+	if f.IsSysNB {
+		asm = "RawSyscallNoError"
 	}
-	return syscalldot() + "Syscall" + strconv.Itoa(c)
+
+	errvar := f.Rets.ErrorVarName()
+	if f.IsSysNB {
+		if errvar == "" && os.Getenv("GOOS") == "linux" {
+			asm = "RawSyscallNoError"
+		} else {
+			asm = "RawSyscall"
+		}
+	} else {
+		if errvar == "" && os.Getenv("GOOS") == "linux" {
+			asm = "SyscallNoError"
+		}
+	}
+
+	if c == 3 {
+		return syscalldot() + asm
+	}
+	return syscalldot() + asm + strconv.Itoa(c)
 }
 
 // SyscallParamList returns source code for SyscallX parameters for function f.
@@ -672,6 +693,8 @@ func (src *Source) Generate(w io.Writer) error {
 	funcMap := template.FuncMap{
 		"packagename": packagename,
 		"syscalldot":  syscalldot,
+		"cmdline":     cmdline,
+		"tags":        buildtags,
 	}
 	t := template.Must(template.New("main").Funcs(funcMap).Parse(srcTemplate))
 	err := t.Execute(w, src)
@@ -722,7 +745,11 @@ func main() {
 // TODO: use println instead to print in the following template
 const srcTemplate = `
 
-{{define "main"}}// Code generated by the command above; see README.md. DO NOT EDIT.
+{{define "main"}} 
+// {{cmdline}}
+// Code generated by the command above; see README.md. DO NOT EDIT.
+
+// +build {{tags}}
 
 package {{packagename}}
 
@@ -747,7 +774,6 @@ var _ syscall.Errno
 func {{.Name}}({{.ParamList}}) {{template "results" .}}{
 {{template "helpertmpvars" .}}	
 {{end}}
-
 {{define "funcbody"}}
 {{template "tmpvars" .}} {{template "syscall" .}}
 {{template "seterror" .}}	return
