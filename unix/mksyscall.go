@@ -43,11 +43,8 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
-	"strconv"
 	"strings"
 	"text/template"
 )
@@ -101,116 +98,116 @@ type Param struct {
 	tmpVarIdx int
 }
 
-// tmpVar returns temp variable name that will be used to represent p during syscall.
-func (p *Param) tmpVar() string {
-	if p.tmpVarIdx < 0 {
-		p.tmpVarIdx = p.fn.curTmpVarIdx
-		p.fn.curTmpVarIdx++
-	}
-	return fmt.Sprintf("_p%d", p.tmpVarIdx)
-}
+// // tmpVar returns temp variable name that will be used to represent p during syscall.
+// func (p *Param) tmpVar() string {
+// 	if p.tmpVarIdx < 0 {
+// 		p.tmpVarIdx = p.fn.curTmpVarIdx
+// 		p.fn.curTmpVarIdx++
+// 	}
+// 	return fmt.Sprintf("_p%d", p.tmpVarIdx)
+// }
 
-// BoolTmpVarCode returns source code for bool temp variable.
-func (p *Param) BoolTmpVarCode() string {
-	const code = `var %s uint32
-	if %s {
-		%s = 1
-	} else {
-		%s = 0
-	}`
-	tmp := p.tmpVar()
-	return fmt.Sprintf(code, tmp, p.Name, tmp, tmp)
-}
+// // BoolTmpVarCode returns source code for bool temp variable.
+// func (p *Param) BoolTmpVarCode() string {
+// 	const code = `var %s uint32
+// 	if %s {
+// 		%s = 1
+// 	} else {
+// 		%s = 0
+// 	}`
+// 	tmp := p.tmpVar()
+// 	return fmt.Sprintf(code, tmp, p.Name, tmp, tmp)
+// }
 
-// SliceTmpVarCode returns source code for slice temp variable.
-func (p *Param) SliceTmpVarCode() string {
-	const code = `var %s unsafe.Pointer
-	if len(%s) > 0 {
-		%s = unsafe.Pointer(&%s[0])
-	} else {
-		%s = unsafe.Pointer(&_zero)
-	}`
-	tmp := p.tmpVar()
-	return fmt.Sprintf(code, tmp, p.Name, tmp, p.Name, tmp)
-}
+// // SliceTmpVarCode returns source code for slice temp variable.
+// func (p *Param) SliceTmpVarCode() string {
+// 	const code = `var %s unsafe.Pointer
+// 	if len(%s) > 0 {
+// 		%s = unsafe.Pointer(&%s[0])
+// 	} else {
+// 		%s = unsafe.Pointer(&_zero)
+// 	}`
+// 	tmp := p.tmpVar()
+// 	return fmt.Sprintf(code, tmp, p.Name, tmp, p.Name, tmp)
+// }
 
-// StringTmpVarCode returns source code for string temp variable.
-func (p *Param) StringTmpVarCode() string {
-	errvar := p.fn.Rets.ErrorVarName()
-	if errvar == "" {
-		errvar = "_"
-	}
-	tmp := p.tmpVar()
-	const code = `var %s %s
-	%s, %s = %s(%s)`
-	s := fmt.Sprintf(code, tmp, p.fn.StrconvType(), tmp, errvar, p.fn.StrconvFunc(), p.Name)
-	if errvar == "-" {
-		return s
-	}
-	const morecode = `
-	if %s != nil {
-		return
-	}`
-	return s + fmt.Sprintf(morecode, errvar)
-}
+// // StringTmpVarCode returns source code for string temp variable.
+// func (p *Param) StringTmpVarCode() string {
+// 	errvar := p.fn.Rets.ErrorVarName()
+// 	if errvar == "" {
+// 		errvar = "_"
+// 	}
+// 	tmp := p.tmpVar()
+// 	const code = `var %s %s
+// 	%s, %s = %s(%s)`
+// 	s := fmt.Sprintf(code, tmp, p.fn.StrconvType(), tmp, errvar, p.fn.StrconvFunc(), p.Name)
+// 	if errvar == "-" {
+// 		return s
+// 	}
+// 	const morecode = `
+// 	if %s != nil {
+// 		return
+// 	}`
+// 	return s + fmt.Sprintf(morecode, errvar)
+// }
 
-// TmpVarCode returns source code for temp variable.
-func (p *Param) TmpVarCode() string {
-	switch {
-	case p.Type == "bool":
-		return p.BoolTmpVarCode()
-	case strings.HasPrefix(p.Type, "[]"):
-		return p.SliceTmpVarCode()
-	default:
-		return ""
-	}
-}
+// // TmpVarCode returns source code for temp variable.
+// func (p *Param) TmpVarCode() string {
+// 	switch {
+// 	case p.Type == "bool":
+// 		return p.BoolTmpVarCode()
+// 	case strings.HasPrefix(p.Type, "[]"):
+// 		return p.SliceTmpVarCode()
+// 	default:
+// 		return ""
+// 	}
+// }
 
-// TmpVarHelperCode returns source code for helper's temp variable.
-func (p *Param) TmpVarHelperCode() string {
-	if p.Type != "string" {
-		return ""
-	}
-	return p.StringTmpVarCode()
-}
+// // TmpVarHelperCode returns source code for helper's temp variable.
+// func (p *Param) TmpVarHelperCode() string {
+// 	if p.Type != "string" {
+// 		return ""
+// 	}
+// 	return p.StringTmpVarCode()
+// }
 
-// SyscallArgList returns source code fragments representing p parameter
-// in syscall. Slices are translated into 2 syscall parameters: pointer to
-// the first element and length.
-func (p *Param) SyscallArgList() []string {
-	originalType := p.Type
-	t := p.HelperType()
-	var s string
-	switch {
-	case t[0] == '*' && originalType == "string":
-		s = fmt.Sprintf("unsafe.Pointer(%s)", p.tmpVar())
-	case t[0] == '*' && originalType != "string":
-		s = fmt.Sprintf("unsafe.Pointer(%s)", p.Name)
-	case t == "bool":
-		s = p.tmpVar()
-	case strings.HasPrefix(t, "[]"):
-		return []string{
-			fmt.Sprintf("uintptr(%s)", p.tmpVar()),
-			fmt.Sprintf("uintptr(len(%s))", p.Name),
-		}
-	default:
-		s = p.Name
-	}
-	return []string{fmt.Sprintf("uintptr(%s)", s)}
-}
+// // SyscallArgList returns source code fragments representing p parameter
+// // in syscall. Slices are translated into 2 syscall parameters: pointer to
+// // the first element and length.
+// func (p *Param) SyscallArgList() []string {
+// 	originalType := p.Type
+// 	t := p.HelperType()
+// 	var s string
+// 	switch {
+// 	case t[0] == '*' && originalType == "string":
+// 		s = fmt.Sprintf("unsafe.Pointer(%s)", p.tmpVar())
+// 	case t[0] == '*' && originalType != "string":
+// 		s = fmt.Sprintf("unsafe.Pointer(%s)", p.Name)
+// 	case t == "bool":
+// 		s = p.tmpVar()
+// 	case strings.HasPrefix(t, "[]"):
+// 		return []string{
+// 			fmt.Sprintf("uintptr(%s)", p.tmpVar()),
+// 			fmt.Sprintf("uintptr(len(%s))", p.Name),
+// 		}
+// 	default:
+// 		s = p.Name
+// 	}
+// 	return []string{fmt.Sprintf("uintptr(%s)", s)}
+// }
 
-// IsError determines if p parameter is used to return error.
-func (p *Param) IsError() bool {
-	return p.Name == "err" && p.Type == "error"
-}
+// // IsError determines if p parameter is used to return error.
+// func (p *Param) IsError() bool {
+// 	return p.Name == "err" && p.Type == "error"
+// }
 
-// HelperType returns type of parameter p used in helper function.
-func (p *Param) HelperType() string {
-	if p.Type == "string" {
-		return p.fn.StrconvType()
-	}
-	return p.Type
-}
+// // HelperType returns type of parameter p used in helper function.
+// func (p *Param) HelperType() string {
+// 	if p.Type == "string" {
+// 		return p.fn.StrconvType()
+// 	}
+// 	return p.Type
+// }
 
 // join concatenates parameters ps into a string with sep separator.
 // Each parameter is converted into string by applying fn to it
@@ -226,101 +223,102 @@ func join(ps []*Param, fn func(*Param) string, sep string) string {
 	return strings.Join(a, sep)
 }
 
-// Rets describes function return parameters.
-type Rets struct {
-	Name         string
-	Type         string
-	ReturnsError bool
-}
+// // Rets describes function return parameters.
+// type Rets struct {
+// 	Name         string
+// 	Type         string
+// 	ReturnsError bool
+// }
 
-// ErrorVarName returns error variable name for r.
-func (r *Rets) ErrorVarName() string {
-	if r.ReturnsError {
-		return "err"
-	}
-	if r.Type == "error" {
-		return r.Name
-	}
-	return ""
-}
+// // ErrorVarName returns error variable name for r.
+// func (r *Rets) ErrorVarName() string {
+// 	if r.ReturnsError {
+// 		return "err"
+// 	}
+// 	if r.Type == "error" {
+// 		return r.Name
+// 	}
+// 	return ""
+// }
 
-// ToParams converts r into slice of *Param.
-func (r *Rets) ToParams() []*Param {
-	ps := make([]*Param, 0)
-	if len(r.Name) > 0 {
-		ps = append(ps, &Param{Name: r.Name, Type: r.Type})
-	}
-	if r.ReturnsError {
-		ps = append(ps, &Param{Name: "err", Type: "error"})
-	}
-	return ps
-}
+// // ToParams converts r into slice of *Param.
+// func (r *Rets) ToParams() []*Param {
+// 	ps := make([]*Param, 0)
+// 	if len(r.Name) > 0 {
+// 		ps = append(ps, &Param{Name: r.Name, Type: r.Type})
+// 	}
+// 	if r.ReturnsError {
+// 		ps = append(ps, &Param{Name: "err", Type: "error"})
+// 	}
+// 	return ps
+// }
 
-// List returns source code of syscall return parameters.
-func (r *Rets) List() string {
-	s := join(r.ToParams(), func(p *Param) string { return p.Name + " " + p.Type }, ", ")
-	if len(s) > 0 {
-		s = "(" + s + ")"
-	}
-	return s
-}
+// // List returns source code of syscall return parameters.
+// func (r *Rets) List() string {
+// 	s := join(r.ToParams(), func(p *Param) string { return p.Name + " " + p.Type }, ", ")
+// 	if len(s) > 0 {
+// 		s = "(" + s + ")"
+// 	}
+// 	return s
+// }
 
-// PrintList returns source code of trace printing part correspondent
-// to syscall return values.
-func (r *Rets) PrintList() string {
-	return join(r.ToParams(), func(p *Param) string { return fmt.Sprintf(`"%s=", %s, `, p.Name, p.Name) }, `", ", `)
-}
+// // PrintList returns source code of trace printing part correspondent
+// // to syscall return values.
+// func (r *Rets) PrintList() string {
+// 	return join(r.ToParams(), func(p *Param) string { return fmt.Sprintf(`"%s=", %s, `, p.Name, p.Name) }, `", ", `)
+// }
 
-// SetReturnValuesCode returns source code that accepts syscall return values.
-func (r *Rets) SetReturnValuesCode() string {
-	//Todo: Rewrite
-	return fmt.Sprintf("r0, _, e1 := ")
-}
+// // SetReturnValuesCode returns source code that accepts syscall return values.
+// func (r *Rets) SetReturnValuesCode() string {
+// 	//Todo: Rewrite
+// 	return fmt.Sprintf("r0, _, e1 := ")
+// }
 
-func (r *Rets) useLongHandleErrorCode(retvar string) string {
-	const code = `if e1 != 0 {
-			err = errnoErr(e1)
-		}`
-	return fmt.Sprintf(code)
-}
+// func (r *Rets) useLongHandleErrorCode(retvar string) string {
+// 	const code = `if e1 != 0 {
+// 			err = errnoErr(e1)
+// 		}`
+// 	return fmt.Sprintf(code)
+// }
 
-// SetErrorCode returns source code that sets return parameters.
-func (r *Rets) SetErrorCode() string {
-	const code = `if r0 != 0 {
-		%s = %sErrno(r0)
-	}`
-	if r.Name == "" && !r.ReturnsError {
-		return ""
-	}
-	if r.Name == "" {
-		return r.useLongHandleErrorCode("r1")
-	}
-	if r.Type == "error" {
-		return fmt.Sprintf(code, r.Name, syscalldot())
-	}
-	s := ""
-	switch {
-	case r.Type[0] == '*':
-		s = fmt.Sprintf("%s = (%s)(unsafe.Pointer(r0))", r.Name, r.Type)
-	case r.Type == "bool":
-		s = fmt.Sprintf("%s = r0 != 0", r.Name)
-	default:
-		s = fmt.Sprintf("%s = %s(r0)", r.Name, r.Type)
-	}
-	if !r.ReturnsError {
-		return s
-	}
-	return s + "\n\t" + r.useLongHandleErrorCode(r.Name)
-}
+// // SetErrorCode returns source code that sets return parameters.
+// func (r *Rets) SetErrorCode() string {
+// 	const code = `if r0 != 0 {
+// 		%s = %sErrno(r0)
+// 	}`
+// 	if r.Name == "" && !r.ReturnsError {
+// 		return ""
+// 	}
+// 	if r.Name == "" {
+// 		return r.useLongHandleErrorCode("r1")
+// 	}
+// 	if r.Type == "error" {
+// 		return fmt.Sprintf(code, r.Name, syscalldot())
+// 	}
+// 	s := ""
+// 	switch {
+// 	case r.Type[0] == '*':
+// 		s = fmt.Sprintf("%s = (%s)(unsafe.Pointer(r0))", r.Name, r.Type)
+// 	case r.Type == "bool":
+// 		s = fmt.Sprintf("%s = r0 != 0", r.Name)
+// 	default:
+// 		s = fmt.Sprintf("%s = %s(r0)", r.Name, r.Type)
+// 	}
+// 	if !r.ReturnsError {
+// 		return s
+// 	}
+// 	return s + "\n\t" + r.useLongHandleErrorCode(r.Name)
+// }
 
 // Fn describes syscall function.
 type Fn struct {
-	Name    string   // function name
-	IsSysNB bool     // sys - false, sysnb - true
-	SysName string   // SYS_NAME
-	Params  []*Param // function parameters (i.e in)
-	Rets    *Rets    // function return parameters (i.e out)
-	src     string
+	Name         string   // function name
+	IsSysNB      bool     // sys - false, sysnb - true
+	SysName      string   // SYS_NAME
+	Params       []*Param // function parameters (i.e in)
+	Rets         []*Param // function return parameters (i.e out)
+	ReturnsError bool     // If error return available
+	src          string
 	// TODO: get rid of this field and just use parameter index instead
 	curTmpVarIdx int // insure tmp variables have uniq names
 }
@@ -379,8 +377,7 @@ func extractSection(s string, start, end rune) (prefix, body, suffix string, fou
 func newFn(s string) (*Fn, error) {
 	s = trim(s)
 	f := &Fn{
-		Rets: &Rets{},
-		src:  s,
+		src: s,
 	}
 	// function name and args
 	prefix, body, s, found := extractSection(s, '(', ')')
@@ -396,34 +393,28 @@ func newFn(s string) (*Fn, error) {
 	// return values
 	_, body, s, found = extractSection(s, '(', ')')
 	if found {
-		r, err := extractParams(body, f)
+		f.Rets, err = extractParams(body, f)
 		if err != nil {
 			return nil, err
 		}
-		switch len(r) {
+
+		// Check if err return available
+		for _, r := range f.Rets {
+			if r.Type == "error" {
+				f.ReturnsError = true
+				if r.Name != "err" {
+					return nil, errors.New("error variable name is not err  \"" + f.src + "\"")
+				}
+				break
+			}
+		}
+
+		switch len(f.Rets) {
 		case 0:
 		case 1:
-			if r[0].IsError() {
-				f.Rets.ReturnsError = true
-			} else {
-				f.Rets.Name = r[0].Name
-				f.Rets.Type = r[0].Type
-			}
 		case 2:
-			if !r[1].IsError() {
-				return nil, errors.New("Only last windows error is allowed as second return value in \"" + f.src + "\"")
-			}
-			f.Rets.ReturnsError = true
-			f.Rets.Name = r[0].Name
-			f.Rets.Type = r[0].Type
 		case 3:
-			if !r[2].IsError() {
-				return nil, errors.New("Only last windows error is allowed as third return value in \"" + f.src + "\"")
-			}
-			f.Rets.ReturnsError = true
-			f.Rets.Name = r[0].Name
-			f.Rets.Type = r[0].Type
-			//Todo: implement proper 3 parameter return type
+
 		default:
 			return nil, errors.New("Too many return values in \"" + f.src + "\"")
 		}
@@ -436,127 +427,215 @@ func (f *Fn) ParamList() string {
 	return join(f.Params, func(p *Param) string { return p.Name + " " + p.Type }, ", ")
 }
 
-// HelperParamList returns source code for helper function f parameters.
-func (f *Fn) HelperParamList() string {
-	return join(f.Params, func(p *Param) string { return p.Name + " " + p.HelperType() }, ", ")
+// RetList returns source code for function f return parameters.
+func (f *Fn) RetList() string {
+	if len(f.Rets) > 0 {
+		return join(f.Rets, func(p *Param) string { return p.Name + " " + p.Type }, ", ")
+	}
+	return ""
 }
 
-// ParamPrintList returns source code of trace printing part correspondent
-// to syscall input parameters.
-func (f *Fn) ParamPrintList() string {
-	return join(f.Params, func(p *Param) string { return fmt.Sprintf(`"%s=", %s, `, p.Name, p.Name) }, `", ", `)
-}
-
-// ParamCount return number of syscall parameters for function f.
-func (f *Fn) ParamCount() int {
+func (f *Fn) FuncBody() string {
+	text := ""
+	var args []string
 	n := 0
+
+	_32bit := ""
+	if *b32 {
+		_32bit = "big-endian"
+	} else if *l32 {
+		_32bit = "little-endian"
+	}
+
 	for _, p := range f.Params {
-		n += len(p.SyscallArgList())
-	}
-	return n
-}
+		if p.Type[0] == '*' {
+			args = append(args, "uintptr(unsafe.Pointer("+p.Name+"))")
+		} else if p.Type == "string" && f.ReturnsError {
 
-// SyscallParamCount determines which version of Syscall/Syscall6/Syscall9/...
-// to use. It returns parameter count for correspondent SyscallX function.
-func (f *Fn) SyscallParamCount() int {
-	n := f.ParamCount()
-	switch {
-	case n <= 3:
-		return 3
-	case n <= 6:
-		return 6
-	case n <= 9:
-		return 9
-	case n <= 12:
-		return 12
-	case n <= 15:
-		return 15
-	default:
-		panic("too many arguments to system call")
-	}
-}
+			text += fmt.Sprintf("\tvar _p%d *byte\n", n)
+			text += fmt.Sprintf("\t_p%d, err = BytePtrFromString(%s)\n", n, p.Name)
+			text += fmt.Sprintf("\tif err != nil {\n\t\treturn\n\t}\n")
+			args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
+			n++
+		} else if p.Type == "string" {
+			// print STDERR "$ARGV:$.: $func uses string arguments, but has no error return\n";
+			text += fmt.Sprintf("\tvar _p%d *byte\n", n)
+			text += fmt.Sprintf("\t_p%d, _ = BytePtrFromString(%s)\n", n, p.Name)
+			args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
+			n++
+		} else if strings.HasPrefix(p.Type, "[]") {
+			// Convert slice into pointer, length.
+			// Have to be careful not to take address of &a[0] if len == 0:
+			// pass dummy pointer in that case.
+			// Used to pass nil, but some OSes or simulators reject write(fd, nil, 0).
+			text += fmt.Sprintf("\tvar _p%d unsafe.Pointer\n", n)
+			text += fmt.Sprintf("\tif len(%s) > 0 {\n\t\t_p%d = unsafe.Pointer(&%s[0])\n\t}", p.Name, n, p.Name)
+			text += fmt.Sprintf(" else {\n\t\t_p%d = unsafe.Pointer(&_zero)\n\t}", n)
+			text += fmt.Sprintf("\n")
+			args = append(args, fmt.Sprintf("uintptr(_p%d)", n), fmt.Sprintf("uintptr(len(%s))", p.Name))
+			n++
+		} else if p.Type == "int64" && (*openbsd || *netbsd) {
+			args = append(args, "0")
+			if _32bit == "big-endian" {
+				args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
+			} else if _32bit == "little-endian" {
+				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
+			} else {
+				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
+			}
 
-// Syscall determines which SyscallX function to use for function f.
-func (f *Fn) Syscall() string {
-	c := f.SyscallParamCount()
-	// Determine which form to use;
-	asm := "Syscall"
-	if f.IsSysNB {
-		asm = "RawSyscallNoError"
-	}
-
-	errvar := f.Rets.ErrorVarName()
-	if f.IsSysNB {
-		if errvar == "" && os.Getenv("GOOS") == "linux" {
-			asm = "RawSyscallNoError"
+		} else if p.Type == "int64" && *dragonfly {
+			if strings.HasPrefix(strings.ToLower(f.Name), "extpread") ||
+				strings.HasPrefix(strings.ToLower(f.Name), "extpwrite") {
+				args = append(args, "0")
+			}
+			if _32bit == "big-endian" {
+				args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
+			} else if _32bit == "little-endian" {
+				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
+			} else {
+				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
+			}
+		} else if p.Type == "int64" && _32bit != "" {
+			if len(args)%2 == 1 && *arm {
+				// arm abi specifies 64-bit argument uses
+				// (even, odd) pair
+				args = append(args, "0")
+			}
+			if _32bit == "big-endian" {
+				args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
+			} else {
+				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
+			}
 		} else {
-			asm = "RawSyscall"
-		}
-	} else {
-		if errvar == "" && os.Getenv("GOOS") == "linux" {
-			asm = "SyscallNoError"
+			args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
 		}
 	}
-
-	if c == 3 {
-		return syscalldot() + asm
-	}
-	return syscalldot() + asm + strconv.Itoa(c)
+	_ = n
+	return text + strings.Join(args, " ")
 }
 
-// SyscallParamList returns source code for SyscallX parameters for function f.
-func (f *Fn) SyscallParamList() string {
-	a := make([]string, 0)
-	for _, p := range f.Params {
-		a = append(a, p.SyscallArgList()...)
-	}
-	for len(a) < f.SyscallParamCount() {
-		a = append(a, "0")
-	}
-	return strings.Join(a, ", ")
-}
+// // HelperParamList returns source code for helper function f parameters.
+// func (f *Fn) HelperParamList() string {
+// 	return join(f.Params, func(p *Param) string { return p.Name + " " + p.HelperType() }, ", ")
+// }
 
-// HelperCallParamList returns source code of call into function f helper.
-func (f *Fn) HelperCallParamList() string {
-	a := make([]string, 0, len(f.Params))
-	for _, p := range f.Params {
-		s := p.Name
-		if p.Type == "string" {
-			s = p.tmpVar()
-		}
-		a = append(a, s)
-	}
-	return strings.Join(a, ", ")
-}
+// // ParamPrintList returns source code of trace printing part correspondent
+// // to syscall input parameters.
+// func (f *Fn) ParamPrintList() string {
+// 	return join(f.Params, func(p *Param) string { return fmt.Sprintf(`"%s=", %s, `, p.Name, p.Name) }, `", ", `)
+// }
 
-// StrconvFunc returns name of Go string to OS string function for f.
-func (f *Fn) StrconvFunc() string {
-	return syscalldot() + "BytePtrFromString"
-}
+// // ParamCount return number of syscall parameters for function f.
+// func (f *Fn) ParamCount() int {
+// 	n := 0
+// 	for _, p := range f.Params {
+// 		n += len(p.SyscallArgList())
+// 	}
+// 	return n
+// }
 
-// StrconvType returns Go type name used for OS string for f.
-func (f *Fn) StrconvType() string {
-	return "*byte"
-}
+// // SyscallParamCount determines which version of Syscall/Syscall6/Syscall9/...
+// // to use. It returns parameter count for correspondent SyscallX function.
+// func (f *Fn) SyscallParamCount() int {
+// 	n := f.ParamCount()
+// 	switch {
+// 	case n <= 3:
+// 		return 3
+// 	case n <= 6:
+// 		return 6
+// 	case n <= 9:
+// 		return 9
+// 	case n <= 12:
+// 		return 12
+// 	case n <= 15:
+// 		return 15
+// 	default:
+// 		panic("too many arguments to system call")
+// 	}
+// }
 
-// HasStringParam is true, if f has at least one string parameter.
-// Otherwise it is false.
-func (f *Fn) HasStringParam() bool {
-	for _, p := range f.Params {
-		if p.Type == "string" {
-			return true
-		}
-	}
-	return true
-}
+// // Syscall determines which SyscallX function to use for function f.
+// func (f *Fn) Syscall() string {
+// 	c := f.SyscallParamCount()
+// 	// Determine which form to use;
+// 	asm := "Syscall"
+// 	if f.IsSysNB {
+// 		asm = "RawSyscallNoError"
+// 	}
 
-// HelperName returns name of function f helper.
-func (f *Fn) HelperName() string {
-	if !f.HasStringParam() {
-		return f.Name
-	}
-	return "_" + f.Name
-}
+// 	errvar := f.Rets.ErrorVarName()
+// 	if f.IsSysNB {
+// 		if errvar == "" && os.Getenv("GOOS") == "linux" {
+// 			asm = "RawSyscallNoError"
+// 		} else {
+// 			asm = "RawSyscall"
+// 		}
+// 	} else {
+// 		if errvar == "" && os.Getenv("GOOS") == "linux" {
+// 			asm = "SyscallNoError"
+// 		}
+// 	}
+
+// 	if c == 3 {
+// 		return syscalldot() + asm
+// 	}
+// 	return syscalldot() + asm + strconv.Itoa(c)
+// }
+
+// // SyscallParamList returns source code for SyscallX parameters for function f.
+// func (f *Fn) SyscallParamList() string {
+// 	a := make([]string, 0)
+// 	for _, p := range f.Params {
+// 		a = append(a, p.SyscallArgList()...)
+// 	}
+// 	for len(a) < f.SyscallParamCount() {
+// 		a = append(a, "0")
+// 	}
+// 	return strings.Join(a, ", ")
+// }
+
+// // HelperCallParamList returns source code of call into function f helper.
+// func (f *Fn) HelperCallParamList() string {
+// 	a := make([]string, 0, len(f.Params))
+// 	for _, p := range f.Params {
+// 		s := p.Name
+// 		if p.Type == "string" {
+// 			s = p.tmpVar()
+// 		}
+// 		a = append(a, s)
+// 	}
+// 	return strings.Join(a, ", ")
+// }
+
+// // StrconvFunc returns name of Go string to OS string function for f.
+// func (f *Fn) StrconvFunc() string {
+// 	return syscalldot() + "BytePtrFromString"
+// }
+
+// // StrconvType returns Go type name used for OS string for f.
+// func (f *Fn) StrconvType() string {
+// 	return "*byte"
+// }
+
+// // HasStringParam is true, if f has at least one string parameter.
+// // Otherwise it is false.
+// func (f *Fn) HasStringParam() bool {
+// 	for _, p := range f.Params {
+// 		if p.Type == "string" {
+// 			return true
+// 		}
+// 	}
+// 	return true
+// }
+
+// // HelperName returns name of function f helper.
+// func (f *Fn) HelperName() string {
+// 	if !f.HasStringParam() {
+// 		return f.Name
+// 	}
+// 	return "_" + f.Name
+// }
 
 // Source files and functions.
 type Source struct {
@@ -664,25 +743,8 @@ func (src *Source) ParseFile(path string) error {
 	return nil
 }
 
-// IsStdRepo reports whether src is part of standard library.
-func (src *Source) IsStdRepo() (bool, error) {
-	if len(src.Files) == 0 {
-		return false, errors.New("no input files provided")
-	}
-	abspath, err := filepath.Abs(src.Files[0])
-	if err != nil {
-		return false, err
-	}
-	goroot := runtime.GOROOT()
-	if runtime.GOOS == "windows" {
-		abspath = strings.ToLower(abspath)
-		goroot = strings.ToLower(goroot)
-	}
-	sep := string(os.PathSeparator)
-	if !strings.HasSuffix(goroot, sep) {
-		goroot += sep
-	}
-	return strings.HasPrefix(abspath, goroot), nil
+func printString(ps *string) string {
+	return fmt.Sprintf("%v", *ps)
 }
 
 // Generate output source file from a source set src.
@@ -695,6 +757,7 @@ func (src *Source) Generate(w io.Writer) error {
 		"syscalldot":  syscalldot,
 		"cmdline":     cmdline,
 		"tags":        buildtags,
+		"printString": printString,
 	}
 	t := template.Must(template.New("main").Funcs(funcMap).Parse(srcTemplate))
 	err := t.Execute(w, src)
@@ -743,16 +806,45 @@ func main() {
 }
 
 // TODO: use println instead to print in the following template
-const srcTemplate = `
 
+/*
+Name         string   // function name
+	IsSysNB      bool     // sys - false, sysnb - true
+	SysName      string   // SYS_NAME
+	Params       []*Param // function parameters (i.e in)
+	Rets         []*Param // function return parameters (i.e out)
+	ReturnsError bool
+	src          string
+*/
+
+const srcTemplate = `
 {{define "main"}} 
 // {{cmdline}}
 // Code generated by the command above; see README.md. DO NOT EDIT.
 
 // +build {{tags}}
 
-package {{packagename}}
+package unix
 
+import (
+	"syscall"
+	"unsafe"
+)
+
+var _ syscall.Errno
+
+{{range .Funcs}}
+// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
+
+// {{.Name}}|{{range .Params}}{{.Name|printString}} {{.Type|printString}}|{{end}} {{range .Rets}}{{.Name|printString}} {{.Type|printString}}|{{end}} {{.SysName}}
+func {{.Name}}({{.ParamList}}) ({{.RetList}}) {
+/* {{.FuncBody}}	
+*/
+}{{end}}
+{{end}}
+`
+
+const temp = `
 import (
 {{range .StdLibImports}}"{{.}}"
 {{end}}
@@ -763,6 +855,7 @@ import (
 
 var _ syscall.Errno
 {{range .Funcs}}
+{{/* Try in vain to keep people from editing this file.The theory is that they jump into the middle of the file without reading the header. */}}
 // THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT
 
 {{if .HasStringParam}}{{template "helperbody" .}}{{end}}{{template "funcbody" .}}{{end}}
