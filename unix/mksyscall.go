@@ -233,7 +233,7 @@ func (f *Fn) FuncBody() string {
 			args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
 			n++
 		} else if p.Type == "string" {
-			fmt.Fprintf(os.Stderr, f.Name + "uses string arguments, but has no error return\n")
+			fmt.Fprintf(os.Stderr, f.Name+"uses string arguments, but has no error return\n")
 			text += fmt.Sprintf("\tvar _p%d *byte\n", n)
 			text += fmt.Sprintf("\t_p%d, _ = BytePtrFromString(%s)\n", n, p.Name)
 			args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
