@@ -32,18 +32,11 @@ package main
 
 import (
 	"bufio"
-	"bytes"
-	"errors"
 	"flag"
 	"fmt"
-	"go/format"
-	"io"
-	"io/ioutil"
-	"log"
 	"os"
 	"regexp"
 	"strings"
-	"text/template"
 )
 
 var (
@@ -58,10 +51,6 @@ var (
 	filename  = flag.String("output", "", "output file name (standard output if omitted)")
 )
 
-func trim(s string) string {
-	return strings.Trim(s, " \t")
-}
-
 // cmdline returns this script's commandline arguments
 func cmdline() string {
 	// Todo: change mksyscall.pl to go run mksyscall.go later. Kept for no git diff
@@ -75,424 +64,31 @@ func buildtags() string {
 
 // Param is function parameter
 type Param struct {
-	Name      string
-	Type      string
-	fn        *Fn
-	tmpVarIdx int
-}
-
-// join concatenates parameters ps into a string with sep separator.
-// Each parameter is converted into string by applying fn to it
-// before conversion.
-func join(ps []*Param, fn func(*Param) string, sep string) string {
-	if len(ps) == 0 {
-		return ""
-	}
-	a := make([]string, 0)
-	for _, p := range ps {
-		a = append(a, fn(p))
-	}
-	return strings.Join(a, sep)
-}
-
-// Fn describes syscall function.
-type Fn struct {
-	Name         string   // function name
-	IsSysNB      bool     // sys - false, sysnb - true
-	SysName      string   // SYS_NAME
-	Params       []*Param // function parameters (i.e in)
-	Rets         []*Param // function return parameters (i.e out)
-	ReturnsError bool     // If error return available
-	src          string
-}
-
-// extractParams parses s to extract function parameters.
-func extractParams(s string, f *Fn) ([]*Param, error) {
-	s = trim(s)
-	if s == "" {
-		return nil, nil
-	}
-	a := strings.Split(s, ",")
-	ps := make([]*Param, len(a))
-	for i := range ps {
-		s2 := trim(a[i])
-		b := strings.Split(s2, " ")
-		if len(b) != 2 {
-			b = strings.Split(s2, "\t")
-			if len(b) != 2 {
-				return nil, errors.New("Could not extract function parameter from \"" + s2 + "\"")
-			}
-		}
-		ps[i] = &Param{
-			Name:      trim(b[0]),
-			Type:      trim(b[1]),
-			fn:        f,
-			tmpVarIdx: -1,
-		}
-	}
-	return ps, nil
-}
-
-// extractSection extracts text out of string s starting after start
-// and ending just before end. found return value will indicate success,
-// and prefix, body and suffix will contain correspondent parts of string s.
-func extractSection(s string, start, end rune) (prefix, body, suffix string, found bool) {
-	s = trim(s)
-	if strings.HasPrefix(s, string(start)) {
-		// no prefix
-		body = s[1:]
-	} else {
-		a := strings.SplitN(s, string(start), 2)
-		if len(a) != 2 {
-			return "", "", s, false
-		}
-		prefix = a[0]
-		body = a[1]
-	}
-	a := strings.SplitN(body, string(end), 2)
-	if len(a) != 2 {
-		return "", "", "", false
-	}
-	return prefix, a[0], a[1], true
-}
-
-// newFn parses string s and return created function Fn.
-func newFn(s string) (*Fn, error) {
-	s = trim(s)
-	f := &Fn{
-		src: s,
-	}
-	// function name and args
-	prefix, body, s, found := extractSection(s, '(', ')')
-	if !found || prefix == "" {
-		return nil, errors.New("Could not extract function name and parameters from \"" + f.src + "\"")
-	}
-	f.Name = prefix
-	var err error
-	f.Params, err = extractParams(body, f)
-	if err != nil {
-		return nil, err
-	}
-	// return values
-	_, body, s, found = extractSection(s, '(', ')')
-	if found {
-		f.Rets, err = extractParams(body, f)
-		if err != nil {
-			return nil, err
-		}
-		// Check if err return available
-		for _, r := range f.Rets {
-			if r.Type == "error" {
-				f.ReturnsError = true
-				if r.Name != "err" {
-					return nil, errors.New("error variable name is not err  \"" + f.src + "\"")
-				}
-				break
-			}
-		}
-		if len(f.Rets) > 3 {
-			return nil, errors.New("Too many return values in \"" + f.src + "\"")
-		}
-	}
-	return f, nil
-}
-
-// ParamList returns source code for function f parameters.
-func (f *Fn) ParamList() string {
-	return join(f.Params, func(p *Param) string { return p.Name + " " + p.Type }, ", ")
-}
-
-// RetList returns source code for function f return parameters.
-func (f *Fn) RetList() string {
-	if len(f.Rets) > 0 {
-		return join(f.Rets, func(p *Param) string { return p.Name + " " + p.Type }, ", ")
-	}
-	return ""
-}
-
-func (f *Fn) FuncBody() string {
-	text := ""
-	var args []string
-	n := 0
-
-	_32bit := ""
-	if *b32 {
-		_32bit = "big-endian"
-	} else if *l32 {
-		_32bit = "little-endian"
-	}
-
-	for _, p := range f.Params {
-		if p.Type[0] == '*' {
-			args = append(args, "uintptr(unsafe.Pointer("+p.Name+"))")
-		} else if p.Type == "string" && f.ReturnsError {
-
-			text += fmt.Sprintf("\tvar _p%d *byte\n", n)
-			text += fmt.Sprintf("\t_p%d, err = BytePtrFromString(%s)\n", n, p.Name)
-			text += fmt.Sprintf("\tif err != nil {\n\t\treturn\n\t}\n")
-			args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
-			n++
-		} else if p.Type == "string" {
-			fmt.Fprintf(os.Stderr, f.Name+"uses string arguments, but has no error return\n")
-			text += fmt.Sprintf("\tvar _p%d *byte\n", n)
-			text += fmt.Sprintf("\t_p%d, _ = BytePtrFromString(%s)\n", n, p.Name)
-			args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
-			n++
-		} else if strings.HasPrefix(p.Type, "[]") {
-			// Convert slice into pointer, length.
-			// Have to be careful not to take address of &a[0] if len == 0:
-			// pass dummy pointer in that case.
-			// Used to pass nil, but some OSes or simulators reject write(fd, nil, 0).
-			text += fmt.Sprintf("\tvar _p%d unsafe.Pointer\n", n)
-			text += fmt.Sprintf("\tif len(%s) > 0 {\n\t\t_p%d = unsafe.Pointer(&%s[0])\n\t}", p.Name, n, p.Name)
-			text += fmt.Sprintf(" else {\n\t\t_p%d = unsafe.Pointer(&_zero)\n\t}", n)
-			text += fmt.Sprintf("\n")
-			args = append(args, fmt.Sprintf("uintptr(_p%d)", n), fmt.Sprintf("uintptr(len(%s))", p.Name))
-			n++
-		} else if p.Type == "int64" && (*openbsd || *netbsd) {
-			args = append(args, "0")
-			if _32bit == "big-endian" {
-				args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
-			} else if _32bit == "little-endian" {
-				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
-			} else {
-				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
-			}
-		} else if p.Type == "int64" && *dragonfly {
-			if !(strings.HasPrefix(strings.ToLower(f.Name), "extpread") ||
-				strings.HasPrefix(strings.ToLower(f.Name), "extpwrite")) {
-				args = append(args, "0")
-			}
-			if _32bit == "big-endian" {
-				args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
-			} else if _32bit == "little-endian" {
-				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
-			} else {
-				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
-			}
-		} else if p.Type == "int64" && _32bit != "" {
-			if len(args)%2 == 1 && *arm {
-				// arm abi specifies 64-bit argument uses
-				// (even, odd) pair
-				args = append(args, "0")
-			}
-			if _32bit == "big-endian" {
-				args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
-			} else {
-				args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
-			}
-		} else {
-			args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
-		}
-	}
-
-	// Determine which form to use; pad args with zeros.
-	asm := "Syscall"
-	if f.IsSysNB {
-		if !f.ReturnsError && os.Getenv("GOOS") == "linux" {
-			asm = "RawSyscallNoError"
-		} else {
-			asm = "RawSyscall"
-		}
-	} else {
-		if !f.ReturnsError && os.Getenv("GOOS") == "linux" {
-			asm = "SyscallNoError"
-		}
-	}
-	if len(args) <= 3 {
-		for len(args) < 3 {
-			args = append(args, "0")
-		}
-	} else if len(args) <= 6 {
-		asm += "6"
-		for len(args) < 6 {
-			args = append(args, "0")
-		}
-	} else if len(args) <= 9 {
-		asm += "9"
-		for len(args) < 9 {
-			args = append(args, "0")
-		}
-	} else {
-		fmt.Fprintf(os.Stderr, "too many arguments to system call\n")
-	}
-
-	// Actual call.
-	arglist := strings.Join(args, ", ")
-	call := fmt.Sprintf("%s(%s,%s)", asm, f.SysName, arglist)
-
-	// Assign return values.
-	body := ""
-	ret := []string{"_", "_", "_"}
-	do_errno := false
-	for i := 0; i < len(f.Rets); i++ {
-		p := f.Rets[i]
-		reg := ""
-		if p.Name == "err" && !*plan9 {
-			reg = "e1"
-			ret[2] = reg
-			do_errno = true
-		} else if p.Name == "err" && *plan9 {
-			ret[0] = "r0"
-			ret[2] = "e1"
-			break
-		} else {
-			reg = fmt.Sprintf("r%d", i)
-			ret[i] = reg
-		}
-		if p.Type == "bool" {
-			reg = fmt.Sprintf("%s != 0", reg)
-		}
-		if p.Type == "int64" && _32bit != "" {
-			// 64-bit number in r1:r0 or r0:r1.
-			if i+2 > len(f.Rets) {
-				fmt.Fprintf(os.Stderr, "not enough registers for int64 return\n")
-			}
-			if _32bit == "big-endian" {
-				reg = fmt.Sprintf("int64(r%d)<<32 | int64(r%d)", i, i+1)
-			} else {
-				reg = fmt.Sprintf("int64(r%d)<<32 | int64(r%d)", i+1, i)
-			}
-			ret[i] = fmt.Sprintf("r%d", i)
-			ret[i+1] = fmt.Sprintf("r%d", i+1)
-		}
-		if reg != "e1" || *plan9 {
-			body += fmt.Sprintf("\t%s = %s(%s)\n", p.Name, p.Type, reg)
-		}
-	}
-
-	if ret[0] == "_" && ret[1] == "_" && ret[2] == "_" {
-		text += fmt.Sprintf("\t%s\n", call)
-	} else {
-		if !f.ReturnsError && os.Getenv("GOOS") == "linux" {
-			// raw syscall without error on Linux, see golang.org/issue/22924
-			text += fmt.Sprintf("\t%s, %s := %s\n", ret[0], ret[1], call)
-		} else {
-			text += fmt.Sprintf("\t%s, %s, %s := %s\n", ret[0], ret[1], ret[2], call)
-		}
-	}
-	text += body
-
-	if *plan9 && ret[2] == "e1" {
-		text += "\tif int32(r0) == -1 {\n"
-		text += "\t\terr = e1\n"
-		text += "\t}\n"
-	} else if do_errno {
-		text += "\tif e1 != 0 {\n"
-		text += "\t\terr = errnoErr(e1)\n"
-		text += "\t}\n"
-	}
-	text += "\treturn"
-	return text
-}
-
-// Source files and functions.
-type Source struct {
-	Funcs []*Fn
-	Files []string
-}
-
-// ParseFiles parses files listed in fs and extracts all syscall
-// functions listed in sys comments. It returns source files
-// and functions collection *Source if successful.
-func ParseFiles(fs []string) (*Source, error) {
-	src := &Source{
-		Funcs: make([]*Fn, 0),
-		Files: make([]string, 0),
-	}
-	for _, file := range fs {
-		if err := src.ParseFile(file); err != nil {
-			return nil, err
-		}
-	}
-	return src, nil
-}
-
-// ParseFile adds additional file path to a source set src.
-func (src *Source) ParseFile(path string) error {
-	file, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-
-	s := bufio.NewScanner(file)
-	for s.Scan() {
-		t := trim(s.Text())
-		if len(t) < 7 {
-			continue
-		}
-		if !strings.HasPrefix(t, "//sys") && !strings.HasPrefix(t, "//sysnb") {
-			continue
-		}
-		// Check for SYS_NAME and extract
-		sysname := ""
-		sn := regexp.MustCompile(`\s*(?:=\s*((?i)SYS_[A-Z0-9_]+))$`).FindStringSubmatch(t)
-		if sn != nil {
-			t = strings.TrimSuffix(t, sn[0])
-			sysname = sn[1]
-		}
-		// Blocking or Non-Blocking fn
-		isSysNB := false
-		if strings.HasPrefix(t, "//sysnb") {
-			t = t[7:] //sysnb
-			isSysNB = true
-		} else {
-			t = t[5:] //sys
-		}
-		if !(t[0] == ' ' || t[0] == '\t') {
-			continue
-		}
-		f, err := newFn(t[1:])
-		if err != nil {
-			return err
-		}
-		f.IsSysNB = isSysNB
-		if sysname == "" {
-			sysname = "SYS_" + f.Name
-			sysname = regexp.MustCompile(`([a-z])([A-Z])`).ReplaceAllString(sysname, `${1}_$2`)
-			sysname = strings.ToUpper(sysname)
-		}
-		f.SysName = sysname
-		src.Funcs = append(src.Funcs, f)
-	}
-	if err := s.Err(); err != nil {
-		return err
-	}
-	src.Files = append(src.Files, path)
-
-	_, err = file.Seek(0, 0)
-	if err != nil {
-		return err
-	}
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func printString(ps *string) string {
-	return fmt.Sprintf("%v", *ps)
-}
-
-// Generate output source file from a source set src.
-func (src *Source) Generate(w io.Writer) error {
-	funcMap := template.FuncMap{
-		"cmdline":     cmdline,
-		"tags":        buildtags,
-		"printString": printString,
-	}
-	t := template.Must(template.New("main").Funcs(funcMap).Parse(srcTemplate))
-	err := t.Execute(w, src)
-	if err != nil {
-		return errors.New("Failed to execute template: " + err.Error())
-	}
-	return nil
+	Name string
+	Type string
 }
 
 func usage() {
 	fmt.Fprintf(os.Stderr, "usage: go run mksyscall.go [-b32 | -l32] [-tags x,y] [file ...]\n")
 	os.Exit(1)
+}
+
+func parseParamList(list string) []string {
+	list = regexp.MustCompile(`^\s*`).ReplaceAllString(list, ``)
+	list = regexp.MustCompile(`\s*$`).ReplaceAllString(list, ``)
+	if list == "" {
+		return []string{}
+	}
+	return regexp.MustCompile(`\s*,\s*`).Split(list, -1)
+}
+
+func parseParam(p string) Param {
+	ps := regexp.MustCompile(`^(\S*) (\S*)$`).FindStringSubmatch(p)
+	if ps == nil {
+		fmt.Fprintf(os.Stderr, "malformed parameter: %s\n", p)
+		os.Exit(1)
+	}
+	return Param{ps[1], ps[2]}
 }
 
 func main() {
@@ -503,37 +99,269 @@ func main() {
 		usage()
 	}
 
+	_32bit := ""
+	if *b32 {
+		_32bit = "big-endian"
+	} else if *l32 {
+		_32bit = "little-endian"
+	}
+
 	// Check that we are using the new build system if we should
 	if os.Getenv("GOOS") == "linux" && os.Getenv("GOARCH") != "sparc64" {
 		if os.Getenv("GOLANG_SYS_BUILD") != "docker" {
-			fmt.Fprintf(os.Stderr, "In the !=w build system, mksyscall should not be called directly.\n")
+			fmt.Fprintf(os.Stderr, "In the new build system, mksyscall should not be called directly.\n")
 			fmt.Fprintf(os.Stderr, "See README.md\n")
 			os.Exit(1)
 		}
 	}
 
-	src, err := ParseFiles(flag.Args())
-	if err != nil {
-		log.Fatal(err)
-	}
+	text := ""
+	for _, path := range flag.Args() {
+		file, err := os.Open(path)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, err.Error())
+			os.Exit(1)
+		}
+		defer file.Close()
 
-	var buf bytes.Buffer
-	if err := src.Generate(&buf); err != nil {
-		log.Fatal(err)
-	}
+		s := bufio.NewScanner(file)
+		for s.Scan() {
+			t := s.Text()
+			t = regexp.MustCompile(`\s+`).ReplaceAllString(t, ` `)
+			t = regexp.MustCompile(`^\s+`).ReplaceAllString(t, ``)
+			t = regexp.MustCompile(`\s+$`).ReplaceAllString(t, ``)
+			nonblock := regexp.MustCompile(`^\/\/sysnb `).FindStringSubmatch(t)
+			if regexp.MustCompile(`^\/\/sys `).FindStringSubmatch(t) == nil && nonblock == nil {
+				continue
+			}
 
-	data, err := format.Source(buf.Bytes())
-	if err != nil {
-		log.Fatal(err)
+			// Line must be of the form
+			//	func Open(path string, mode int, perm int) (fd int, errno error)
+			// Split into name, in params, out params.
+			f := regexp.MustCompile(`^\/\/sys(nb)? (\w+)\(([^()]*)\)\s*(?:\(([^()]+)\))?\s*(?:=\s*((?i)SYS_[A-Z0-9_]+))?$`).FindStringSubmatch(t)
+			if f == nil {
+				fmt.Fprintf(os.Stderr, "malformed //sys declaration\n")
+				os.Exit(1)
+			}
+			funct, inps, outps, sysname := f[2], f[3], f[4], f[5]
+
+			// Split argument lists on comma.
+			in := parseParamList(inps)
+			out := parseParamList(outps)
+
+			// Try in vain to keep people from editing this file.
+			// The theory is that they jump into the middle of the file
+			// without reading the header.
+			text += "// THIS FILE IS GENERATED BY THE COMMAND AT THE TOP; DO NOT EDIT\n\n"
+
+			// Go function header.
+			out_decl := ""
+			if len(out) > 0 {
+				out_decl = fmt.Sprintf(" (%s)", strings.Join(out, ", "))
+			}
+			text += fmt.Sprintf("func %s(%s)%s {\n", funct, strings.Join(in, ", "), out_decl)
+
+			// Check if err return available
+			errvar := ""
+			for _, param := range out {
+				p := parseParam(param)
+				if p.Type == "error" {
+					errvar = p.Name
+					break
+				}
+			}
+
+			// Prepare arguments to Syscall.
+			var args []string
+			n := 0
+			for _, param := range in {
+				p := parseParam(param)
+				if regexp.MustCompile(`^\*`).FindStringSubmatch(p.Type) != nil {
+					args = append(args, "uintptr(unsafe.Pointer("+p.Name+"))")
+				} else if p.Type == "string" && errvar != "" {
+					text += fmt.Sprintf("\tvar _p%d *byte\n", n)
+					text += fmt.Sprintf("\t_p%d, %s = BytePtrFromString(%s)\n", n, errvar, p.Name)
+					text += fmt.Sprintf("\tif %s != nil {\n\t\treturn\n\t}\n", errvar)
+					args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
+					n++
+				} else if p.Type == "string" {
+					fmt.Fprintf(os.Stderr, funct+"uses string arguments, but has no error return\n")
+					text += fmt.Sprintf("\tvar _p%d *byte\n", n)
+					text += fmt.Sprintf("\t_p%d, _ = BytePtrFromString(%s)\n", n, p.Name)
+					args = append(args, fmt.Sprintf("uintptr(unsafe.Pointer(_p%d))", n))
+					n++
+				} else if regexp.MustCompile(`^\[\](.*)`).FindStringSubmatch(p.Type) != nil {
+					// Convert slice into pointer, length.
+					// Have to be careful not to take address of &a[0] if len == 0:
+					// pass dummy pointer in that case.
+					// Used to pass nil, but some OSes or simulators reject write(fd, nil, 0).
+					text += fmt.Sprintf("\tvar _p%d unsafe.Pointer\n", n)
+					text += fmt.Sprintf("\tif len(%s) > 0 {\n\t\t_p%d = unsafe.Pointer(&%s[0])\n\t}", p.Name, n, p.Name)
+					text += fmt.Sprintf(" else {\n\t\t_p%d = unsafe.Pointer(&_zero)\n\t}\n", n)
+					args = append(args, fmt.Sprintf("uintptr(_p%d)", n), fmt.Sprintf("uintptr(len(%s))", p.Name))
+					n++
+				} else if p.Type == "int64" && (*openbsd || *netbsd) {
+					args = append(args, "0")
+					if _32bit == "big-endian" {
+						args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
+					} else if _32bit == "little-endian" {
+						args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
+					} else {
+						args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
+					}
+				} else if p.Type == "int64" && *dragonfly {
+					if regexp.MustCompile(`^(?i)extp(read|write)`).FindStringSubmatch(funct) == nil {
+						args = append(args, "0")
+					}
+					if _32bit == "big-endian" {
+						args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
+					} else if _32bit == "little-endian" {
+						args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
+					} else {
+						args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
+					}
+				} else if p.Type == "int64" && _32bit != "" {
+					if len(args)%2 == 1 && *arm {
+						// arm abi specifies 64-bit argument uses
+						// (even, odd) pair
+						args = append(args, "0")
+					}
+					if _32bit == "big-endian" {
+						args = append(args, fmt.Sprintf("uintptr(%s>>32)", p.Name), fmt.Sprintf("uintptr(%s)", p.Name))
+					} else {
+						args = append(args, fmt.Sprintf("uintptr(%s)", p.Name), fmt.Sprintf("uintptr(%s>>32)", p.Name))
+					}
+				} else {
+					args = append(args, fmt.Sprintf("uintptr(%s)", p.Name))
+				}
+			}
+
+			// Determine which form to use; pad args with zeros.
+			asm := "Syscall"
+			if nonblock != nil {
+				if errvar == "" && os.Getenv("GOOS") == "linux" {
+					asm = "RawSyscallNoError"
+				} else {
+					asm = "RawSyscall"
+				}
+			} else {
+				if errvar == "" && os.Getenv("GOOS") == "linux" {
+					asm = "SyscallNoError"
+				}
+			}
+			if len(args) <= 3 {
+				for len(args) < 3 {
+					args = append(args, "0")
+				}
+			} else if len(args) <= 6 {
+				asm += "6"
+				for len(args) < 6 {
+					args = append(args, "0")
+				}
+			} else if len(args) <= 9 {
+				asm += "9"
+				for len(args) < 9 {
+					args = append(args, "0")
+				}
+			} else {
+				fmt.Fprintf(os.Stderr, "too many arguments to system call\n")
+			}
+
+			// System call number.
+			if sysname == "" {
+				sysname = "SYS_" + funct
+				sysname = regexp.MustCompile(`([a-z])([A-Z])`).ReplaceAllString(sysname, `${1}_$2`)
+				sysname = strings.ToUpper(sysname)
+			}
+
+			// Actual call.
+			arglist := strings.Join(args, ", ")
+			call := fmt.Sprintf("%s(%s, %s)", asm, sysname, arglist)
+
+			// Assign return values.
+			body := ""
+			ret := []string{"_", "_", "_"}
+			do_errno := false
+			for i := 0; i < len(out); i++ {
+				p := parseParam(out[i])
+				reg := ""
+				if p.Name == "err" && !*plan9 {
+					reg = "e1"
+					ret[2] = reg
+					do_errno = true
+				} else if p.Name == "err" && *plan9 {
+					ret[0] = "r0"
+					ret[2] = "e1"
+					break
+				} else {
+					reg = fmt.Sprintf("r%d", i)
+					ret[i] = reg
+				}
+				if p.Type == "bool" {
+					reg = fmt.Sprintf("%s != 0", reg)
+				}
+				if p.Type == "int64" && _32bit != "" {
+					// 64-bit number in r1:r0 or r0:r1.
+					if i+2 > len(out) {
+						fmt.Fprintf(os.Stderr, "not enough registers for int64 return\n")
+					}
+					if _32bit == "big-endian" {
+						reg = fmt.Sprintf("int64(r%d)<<32 | int64(r%d)", i, i+1)
+					} else {
+						reg = fmt.Sprintf("int64(r%d)<<32 | int64(r%d)", i+1, i)
+					}
+					ret[i] = fmt.Sprintf("r%d", i)
+					ret[i+1] = fmt.Sprintf("r%d", i+1)
+				}
+				if reg != "e1" || *plan9 {
+					body += fmt.Sprintf("\t%s = %s(%s)\n", p.Name, p.Type, reg)
+				}
+			}
+			if ret[0] == "_" && ret[1] == "_" && ret[2] == "_" {
+				text += fmt.Sprintf("\t%s\n", call)
+			} else {
+				if errvar == "" && os.Getenv("GOOS") == "linux" {
+					// raw syscall without error on Linux, see golang.org/issue/22924
+					text += fmt.Sprintf("\t%s, %s := %s\n", ret[0], ret[1], call)
+				} else {
+					text += fmt.Sprintf("\t%s, %s, %s := %s\n", ret[0], ret[1], ret[2], call)
+				}
+			}
+			text += body
+
+			if *plan9 && ret[2] == "e1" {
+				text += "\tif int32(r0) == -1 {\n"
+				text += "\t\terr = e1\n"
+				text += "\t}\n"
+			} else if do_errno {
+				text += "\tif e1 != 0 {\n"
+				text += "\t\terr = errnoErr(e1)\n"
+				text += "\t}\n"
+			}
+			text += "\treturn\n"
+			text += "}\n\n"
+
+		}
 	}
-	if *filename == "" {
-		_, err = os.Stdout.Write(data)
-	} else {
-		err = ioutil.WriteFile(*filename, data, 0644)
-	}
-	if err != nil {
-		log.Fatal(err)
-	}
+	text = strings.TrimSuffix(text, "\n\n")
+
+	fmt.Printf(`// %s
+// Code generated by the command above; see README.md. DO NOT EDIT.
+
+// +build %s
+
+package unix
+
+import (
+	"syscall"
+	"unsafe"
+)
+
+var _ syscall.Errno
+
+%s
+`, cmdline(), buildtags(), text)
+
 }
 
 const srcTemplate = `
