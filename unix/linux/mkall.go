@@ -206,6 +206,18 @@ func makeCommand(name string, args ...string) *exec.Cmd {
 func (t *target) commandFormatOutput(formatter string, outputFile string,
 	name string, args ...string) (err error) {
 	mainCmd := makeCommand(name, args...)
+	if name == "mksyscall" {
+		args = append([]string{"run", "mksyscall.go"}, args...)
+		mainCmd = makeCommand("go", args...)
+		// Set GOARCH_TARGET so mksyscall knows what GOARCH is..
+		mainCmd.Env = append(os.Environ(), "GOARCH_TARGET="+t.GoArch)
+		// Set GOARCH to host arch for mksyscall, so it can run natively.
+		for i, s := range mainCmd.Env {
+			if strings.HasPrefix(s, "GOARCH=") {
+				mainCmd.Env[i] = "GOARCH=" + BuildArch
+			}
+		}
+	}
 
 	fmtCmd := makeCommand(formatter)
 	if formatter == "mkpost" {
@@ -472,8 +484,7 @@ func (t *target) makeZSyscallFile() error {
 
 	args := append(t.mksyscallFlags(), "-tags", "linux,"+t.GoArch,
 		"syscall_linux.go", archSyscallFile)
-	args = append([]string{"run", "mksyscall.go"}, args...)
-	return t.commandFormatOutput("gofmt", zsyscallFile, "go", args...)
+	return t.commandFormatOutput("gofmt", zsyscallFile, "mksyscall", args...)
 }
 
 // makes the zerrors_linux_$GOARCH.go file

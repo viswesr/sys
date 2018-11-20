@@ -45,10 +45,6 @@ case "$#" in
 	exit 2
 esac
 
-# Create mksyscall executable. Executable is added to .gitignore
-# Todo: Rewrite a better way to use mksyscall.go. go run mksycall.go is not workable.
-	go build -o mksyscall mksyscall.go
-
 if [[ "$GOOS" = "linux" ]] && [[ "$GOARCH" != "sparc64" ]]; then
 	# Use then new build system
 	# Files generated through docker (use $cmd so you can Ctl-C the build or run)

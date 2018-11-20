@@ -91,6 +91,12 @@ func parseParam(p string) Param {
 }
 
 func main() {
+	// Get the OS and architecture (using GOARCH_TARGET if it exists)
+	goos := os.Getenv("GOOS")
+	goarch := os.Getenv("GOARCH_TARGET")
+	if goarch == "" {
+		goarch = os.Getenv("GOARCH")
+	}
 	flag.Usage = usage
 	flag.Parse()
 	if len(flag.Args()) <= 0 {
@@ -106,7 +112,7 @@ func main() {
 	}
 
 	// Check that we are using the new build system if we should
-	if os.Getenv("GOOS") == "linux" && os.Getenv("GOARCH") != "sparc64" {
+	if goos == "linux" && goarch != "sparc64" {
 		if os.Getenv("GOLANG_SYS_BUILD") != "docker" {
 			fmt.Fprintf(os.Stderr, "In the new build system, mksyscall should not be called directly.\n")
 			fmt.Fprintf(os.Stderr, "See README.md\n")
@@ -238,13 +244,13 @@ func main() {
 			// Determine which form to use; pad args with zeros.
 			asm := "Syscall"
 			if nonblock != nil {
-				if errvar == "" && os.Getenv("GOOS") == "linux" {
+				if errvar == "" && goos == "linux" {
 					asm = "RawSyscallNoError"
 				} else {
 					asm = "RawSyscall"
 				}
 			} else {
-				if errvar == "" && os.Getenv("GOOS") == "linux" {
+				if errvar == "" && goos == "linux" {
 					asm = "SyscallNoError"
 				}
 			}
@@ -319,7 +325,7 @@ func main() {
 			if ret[0] == "_" && ret[1] == "_" && ret[2] == "_" {
 				text += fmt.Sprintf("\t%s\n", call)
 			} else {
-				if errvar == "" && os.Getenv("GOOS") == "linux" {
+				if errvar == "" && goos == "linux" {
 					// raw syscall without error on Linux, see golang.org/issue/22924
 					text += fmt.Sprintf("\t%s, %s := %s\n", ret[0], ret[1], call)
 				} else {
