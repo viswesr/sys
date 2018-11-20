@@ -472,7 +472,8 @@ func (t *target) makeZSyscallFile() error {
 
 	args := append(t.mksyscallFlags(), "-tags", "linux,"+t.GoArch,
 		"syscall_linux.go", archSyscallFile)
-	return t.commandFormatOutput("gofmt", zsyscallFile, "./mksyscall", args...)
+	args = append([]string{"run", "mksyscall.go"}, args...)
+	return t.commandFormatOutput("gofmt", zsyscallFile, "go", args...)
 }
 
 // makes the zerrors_linux_$GOARCH.go file
