@@ -202,6 +202,18 @@ func makeCommand(name string, args ...string) *exec.Cmd {
 	return cmd
 }
 
+// Set GOARCH for target and build environments.
+func (t *target) setTargetBuildArch(cmd *exec.Cmd) {
+	// Set GOARCH_TARGET so command knows what GOARCH is..
+	cmd.Env = append(os.Environ(), "GOARCH_TARGET="+t.GoArch)
+	// Set GOARCH to host arch for command, so it can run natively.
+	for i, s := range cmd.Env {
+		if strings.HasPrefix(s, "GOARCH=") {
+			cmd.Env[i] = "GOARCH=" + BuildArch
+		}
+	}
+}
+
 // Runs the command, pipes output to a formatter, pipes that to an output file.
 func (t *target) commandFormatOutput(formatter string, outputFile string,
 	name string, args ...string) (err error) {
@@ -209,6 +221,7 @@ func (t *target) commandFormatOutput(formatter string, outputFile string,
 	if name == "mksyscall" {
 		args = append([]string{"run", "mksyscall.go"}, args...)
 		mainCmd = makeCommand("go", args...)
+<<<<<<< HEAD
 		// Set GOARCH_TARGET so mksyscall knows what GOARCH is..
 		mainCmd.Env = append(os.Environ(), "GOARCH_TARGET="+t.GoArch)
 		// Set GOARCH to host arch for mksyscall, so it can run natively.
@@ -217,19 +230,15 @@ func (t *target) commandFormatOutput(formatter string, outputFile string,
 				mainCmd.Env[i] = "GOARCH=" + BuildArch
 			}
 		}
+=======
+		t.setTargetBuildArch(mainCmd)
+>>>>>>> a7e0c86... unix: replace "mksyscall.pl" script with a Go program
 	}
 
 	fmtCmd := makeCommand(formatter)
 	if formatter == "mkpost" {
 		fmtCmd = makeCommand("go", "run", "mkpost.go")
-		// Set GOARCH_TARGET so mkpost knows what GOARCH is..
-		fmtCmd.Env = append(os.Environ(), "GOARCH_TARGET="+t.GoArch)
-		// Set GOARCH to host arch for mkpost, so it can run natively.
-		for i, s := range fmtCmd.Env {
-			if strings.HasPrefix(s, "GOARCH=") {
-				fmtCmd.Env[i] = "GOARCH=" + BuildArch
-			}
-		}
+		t.setTargetBuildArch(fmtCmd)
 	}
 
 	// mainCmd | fmtCmd > outputFile
