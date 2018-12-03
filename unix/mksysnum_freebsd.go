@@ -4,6 +4,8 @@
 //
 // Generate system call table for FreeBSD from master list
 // (for example, /usr/src/sys/kern/syscalls.master).
+
+// +build ignore
 package main
 
 import (
@@ -32,7 +34,7 @@ func buildTags() string {
 
 func checkErr(err error) {
 	if err != nil {
-		fmt.Fprint(os.Stderr, err.Error(), "\n")
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 }
@@ -53,8 +55,12 @@ func (r *re) Match(exp string) bool {
 }
 
 func main() {
-	// Get the OS and architecture (using GOARCH_TARGET if it exists)
-	goos = os.Getenv("GOOS")
+	// Get the OS (using GOOS_TARGET if it exist)
+	goos = os.Getenv("GOOS_TARGET")
+	if goos == "" {
+		goos = os.Getenv("GOOS")
+	}
+	// Get the architecture (using GOARCH_TARGET if it exists)
 	goarch = os.Getenv("GOARCH_TARGET")
 	if goarch == "" {
 		goarch = os.Getenv("GOARCH")
@@ -106,4 +112,4 @@ const template = `// %s
 package unix
 
 const(
-%s )`
+%s)`

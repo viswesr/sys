@@ -11,8 +11,6 @@ package main
 import (
 	"bufio"
 	"fmt"
-	"io/ioutil"
-	"net/http"
 	"os"
 	"regexp"
 	"strings"
@@ -24,7 +22,7 @@ var (
 
 // cmdLine returns this programs's commandline arguments
 func cmdLine() string {
-	return "go run mksysnum_openbsd.go " + strings.Join(os.Args[1:], " ")
+	return "go run mksysnum_darwin.go " + strings.Join(os.Args[1:], " ")
 }
 
 // buildTags returns build tags
@@ -70,35 +68,23 @@ func main() {
 		fmt.Fprintf(os.Stderr, "GOARCH or GOOS not defined in environment\n")
 		os.Exit(1)
 	}
-	// Download syscalls.master file
-	resp, err := http.Get(os.Args[1])
-	checkErr(err)
-	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	// Open syscalls.h file
+	file, err := os.Open(os.Args[1])
 	checkErr(err)
 
 	text := ""
-	s := bufio.NewScanner(strings.NewReader(string(body)))
+	s := bufio.NewScanner(file)
 	for s.Scan() {
 		t := re{str: s.Text()}
-		if t.Match(`^([0-9]+)\s+STD\s+(NOLOCK\s+)?({ \S+\s+\*?(\w+).*)$`) {
-			num, proto, name := t.sub[1], t.sub[3], t.sub[4]
+		if t.Match(`^#define\s+SYS_(\w+)\s+([0-9]+)`) {
+			name, num := t.sub[1], t.sub[2]
 			name = strings.ToUpper(name)
-
-			// There are multiple entries for enosys and nosys, so comment them out.
-			nm := re{str: name}
-			if nm.Match(`^SYS_E?NOSYS$`) {
-				name = fmt.Sprintf("// %s", name)
-			}
-			if name == `SYS_SYS_EXIT` {
-				name = `SYS_EXIT`
-			}
-
-			text += fmt.Sprintf("	%s = %s;  // %s\n", name, num, proto)
+			text += fmt.Sprintf("	SYS_%s = %s;\n", name, num)
 		}
 	}
 	err = s.Err()
 	checkErr(err)
+	file.Close()
 
 	fmt.Printf(template, cmdLine(), buildTags(), text)
 }

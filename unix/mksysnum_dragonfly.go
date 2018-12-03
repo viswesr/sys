@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
-// Generate system call table for OpenBSD from master list
+// Generate system call table for DragonFly from master list
 // (for example, /usr/src/sys/kern/syscalls.master).
 
 // +build ignore
@@ -24,7 +24,7 @@ var (
 
 // cmdLine returns this programs's commandline arguments
 func cmdLine() string {
-	return "go run mksysnum_openbsd.go " + strings.Join(os.Args[1:], " ")
+	return "go run mksysnum_dragonfly.go " + strings.Join(os.Args[1:], " ")
 }
 
 // buildTags returns build tags
@@ -81,8 +81,9 @@ func main() {
 	s := bufio.NewScanner(strings.NewReader(string(body)))
 	for s.Scan() {
 		t := re{str: s.Text()}
-		if t.Match(`^([0-9]+)\s+STD\s+(NOLOCK\s+)?({ \S+\s+\*?(\w+).*)$`) {
-			num, proto, name := t.sub[1], t.sub[3], t.sub[4]
+		if t.Match(`^([0-9]+)\s+STD\s+({ \S+\s+(\w+).*)$`) {
+			num, proto:= t.sub[1], t.sub[2]
+			name := "SYS_" + t.sub[3]
 			name = strings.ToUpper(name)
 
 			// There are multiple entries for enosys and nosys, so comment them out.

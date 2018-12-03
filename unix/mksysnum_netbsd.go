@@ -2,7 +2,7 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
-// Generate system call table for OpenBSD from master list
+// Generate system call table for NetBSD from master list
 // (for example, /usr/src/sys/kern/syscalls.master).
 
 // +build ignore
@@ -24,7 +24,7 @@ var (
 
 // cmdLine returns this programs's commandline arguments
 func cmdLine() string {
-	return "go run mksysnum_openbsd.go " + strings.Join(os.Args[1:], " ")
+	return "go run mksysnum_netbsd.go " + strings.Join(os.Args[1:], " ")
 }
 
 // buildTags returns build tags
@@ -78,24 +78,37 @@ func main() {
 	checkErr(err)
 
 	text := ""
+	line := ""
 	s := bufio.NewScanner(strings.NewReader(string(body)))
 	for s.Scan() {
-		t := re{str: s.Text()}
-		if t.Match(`^([0-9]+)\s+STD\s+(NOLOCK\s+)?({ \S+\s+\*?(\w+).*)$`) {
-			num, proto, name := t.sub[1], t.sub[3], t.sub[4]
-			name = strings.ToUpper(name)
-
-			// There are multiple entries for enosys and nosys, so comment them out.
-			nm := re{str: name}
-			if nm.Match(`^SYS_E?NOSYS$`) {
-				name = fmt.Sprintf("// %s", name)
-			}
-			if name == `SYS_SYS_EXIT` {
-				name = `SYS_EXIT`
-			}
-
-			text += fmt.Sprintf("	%s = %s;  // %s\n", name, num, proto)
+		t := re{str: line}
+		if t.Match(`^(.*)\\$`) {
+			// Handle continuation
+			line = t.sub[1]
+			line += strings.TrimLeft(s.Text(), " \t")
+		} else {
+			// New line
+			line = s.Text()
 		}
+		t = re{str: line}
+		if t.Match(`\\$`) {
+			continue
+		}
+		t = re{str: line}
+		if t.Match(`^([0-9]+)\s+((STD)|(NOERR))\s+(RUMP\s+)?({\s+\S+\s*\*?\s*\|(\S+)\|(\S*)\|(\w+).*\s+})(\s+(\S+))?$`) {
+			num := t.sub[1]
+			proto := t.sub[6]
+			compat := t.sub[8]
+			name := t.sub[7] + "_" + t.sub[9]
+			if t.sub[11] != "" {
+				name = t.sub[7] + "_" + t.sub[11]
+			}
+			name = strings.ToUpper(name)
+			if compat == "" || compat == "13" || compat == "30" || compat == "50" {
+				text += fmt.Sprintf("	%s = %s;  // %s\n", name, num, proto)
+			}
+		}
+
 	}
 	err = s.Err()
 	checkErr(err)
