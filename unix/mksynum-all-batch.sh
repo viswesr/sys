@@ -1,0 +1,16 @@
+export GOOS_TARGET=darwin; export GOARCH_TARGET=386; ./mkall.sh
+export GOOS_TARGET=darwin; export GOARCH_TARGET=amd64; ./mkall.sh
+export GOOS_TARGET=darwin; export GOARCH_TARGET=arm; ./mkall.sh
+export GOOS_TARGET=darwin; export GOARCH_TARGET=arm64; ./mkall.sh
+export GOOS_TARGET=dragonfly; export GOARCH_TARGET=amd64; ./mkall.sh
+export GOOS_TARGET=freebsd; export GOARCH_TARGET=386; ./mkall.sh
+export GOOS_TARGET=freebsd; export GOARCH_TARGET=amd64; ./mkall.sh
+export GOOS_TARGET=freebsd; export GOARCH_TARGET=arm; ./mkall.sh
+export GOOS_TARGET=linux; export GOARCH_TARGET=sparc64; ./mkall.sh
+export GOOS_TARGET=netbsd; export GOARCH_TARGET=386; ./mkall.sh
+export GOOS_TARGET=netbsd; export GOARCH_TARGET=amd64; ./mkall.sh
+export GOOS_TARGET=netbsd; export GOARCH_TARGET=arm; ./mkall.sh
+export GOOS_TARGET=openbsd; export GOARCH_TARGET=386; ./mkall.sh
+export GOOS_TARGET=openbsd; export GOARCH_TARGET=amd64; ./mkall.sh
+export GOOS_TARGET=openbsd; export GOARCH_TARGET=arm; ./mkall.sh
+export GOOS_TARGET=solaris; export GOARCH_TARGET=amd64; ./mkall.sh
