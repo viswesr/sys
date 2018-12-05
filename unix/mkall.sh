@@ -7,7 +7,8 @@
 # the Architecture/OS specified by the GOARCH and GOOS environment variables.
 # See README.md for more information about how the build system works.
 
-GOOSARCH="${GOOS_TARGET}_${GOARCH_TARGET}"
+GOOSARCH="${GOOS}_${GOARCH}"
+GOARCH_TARGET="${GOARCH_TARGET}"
 
 # defaults
 mksyscall="go run mksyscall.go"
@@ -45,13 +46,18 @@ case "$#" in
 	exit 2
 esac
 
-# if [[ "$GOOS" = "linux" ]] && [[ "$GOARCH" != "sparc64" ]]; then
-# 	# Use then new build system
-# 	# Files generated through docker (use $cmd so you can Ctl-C the build or run)
-# 	$cmd docker build --tag generate:$GOOS $GOOS
-# 	$cmd docker run --interactive --tty --volume $(dirname "$(readlink -f "$0")"):/build generate:$GOOS
-# 	exit
-# fi
+if [[ -z "$GOARCH_TARGET" ]]; then
+	echo 'undefined $GOARCH_TARGET:' "$GOARCH_TARGET" 1>&2
+	exit
+fi
+
+if [[ "$GOOS" = "linux" ]] && [[ "$GOARCH" != "sparc64" ]]; then
+	# Use then new build system
+	# Files generated through docker (use $cmd so you can Ctl-C the build or run)
+	$cmd docker build --tag generate:$GOOS $GOOS
+	$cmd docker run --interactive --tty --volume $(dirname "$(readlink -f "$0")"):/build generate:$GOOS
+	exit
+fi
 
 GOOSARCH_in=syscall_$GOOSARCH.go
 case "$GOOSARCH" in
